@@ -13,6 +13,74 @@ enum MatchResult {
   Uuid = 5,
 }
 
+/** Search aliases let symbol and LaTeX users find the same note. */
+const mathSearchGroups = [
+  ['∑', '\\sum'],
+  ['∏', '\\prod'],
+  ['∫', '\\int'],
+  ['∮', '\\oint'],
+  ['×', '\\times'],
+  ['÷', '\\div'],
+  ['±', '\\pm'],
+  ['∓', '\\mp'],
+  ['√', '\\sqrt'],
+  ['≤', '\\le', '\\leq'],
+  ['≥', '\\ge', '\\geq'],
+  ['≠', '\\ne', '\\neq'],
+  ['≈', '\\approx'],
+  ['≡', '\\equiv'],
+  ['∼', '\\sim'],
+  ['∝', '\\propto'],
+  ['∞', '\\infty'],
+  ['∂', '\\partial'],
+  ['∇', '\\nabla'],
+  ['→', '\\to', '\\rightarrow'],
+  ['←', '\\leftarrow'],
+  ['⇒', '\\implies', '\\Rightarrow'],
+  ['↔', '\\leftrightarrow'],
+  ['∀', '\\forall'],
+  ['∃', '\\exists'],
+  ['∈', '\\in'],
+  ['∉', '\\notin'],
+  ['⊂', '\\subset'],
+  ['⊃', '\\supset'],
+  ['∪', '\\cup'],
+  ['∩', '\\cap'],
+  ['∅', '\\emptyset'],
+]
+
+const mathSearchAliases = new Map<string, string[]>()
+for (const group of mathSearchGroups) {
+  for (const term of group) {
+    mathSearchAliases.set(term, group.filter((alias) => alias !== term))
+  }
+}
+
+function searchTermMatches(text: string | undefined, term: string): boolean {
+  if (!text) {
+    return false
+  }
+
+  const aliases = mathSearchAliases.get(term) ?? mathSearchAliases.get(term.toLowerCase()) ?? []
+  return [term, ...aliases].some((candidate) => {
+    const normalizedCandidate = candidate.toLowerCase()
+    if (!normalizedCandidate.startsWith('\\')) {
+      return text.includes(normalizedCandidate)
+    }
+
+    let index = text.indexOf(normalizedCandidate)
+    while (index !== -1) {
+      const nextCharacter = text[index + normalizedCandidate.length]
+      if (!nextCharacter || !/[a-z]/.test(nextCharacter)) {
+        return true
+      }
+      index = text.indexOf(normalizedCandidate, index + 1)
+    }
+
+    return false
+  })
+}
+
 export function notesAndFilesMatchingOptions(
   options: NotesAndFilesDisplayOptions,
   fromItems: SearchableDecryptedItem[],
@@ -38,18 +106,33 @@ export function itemMatchesQuery(
   searchQuery: SearchQuery,
   collection: ReferenceLookupCollection,
 ): boolean {
-  const shouldCheckForSomeTagMatches = searchQuery.shouldCheckForSomeTagMatches ?? true
-  const itemTags = collection.elementsReferencingElement(itemToMatch, ContentType.TYPES.Tag) as SNTag[]
-  const someTagsMatches =
-    shouldCheckForSomeTagMatches &&
-    itemTags.some((tag) => matchResultForStringQuery(tag, searchQuery.query) !== MatchResult.None)
+  const { query, includeProtectedNoteText, shouldCheckForSomeTagMatches = true, noteTitleOnly = false } = searchQuery
 
-  if (itemToMatch.protected && !searchQuery.includeProtectedNoteText) {
-    const match = matchResultForStringQuery(itemToMatch, searchQuery.query)
-    return match === MatchResult.Title || match === MatchResult.TitleAndText || someTagsMatches
+  if (query.length === 0) {
+    return true
   }
 
-  return matchResultForStringQuery(itemToMatch, searchQuery.query) !== MatchResult.None || someTagsMatches
+  const itemMatch = matchResultForStringQuery(itemToMatch, query)
+
+  if (noteTitleOnly) {
+    return itemMatch === MatchResult.Title || itemMatch === MatchResult.TitleAndText
+  }
+
+  if (shouldCheckForSomeTagMatches) {
+    const itemTags = collection.elementsReferencingElement(itemToMatch, ContentType.TYPES.Tag) as SNTag[]
+    const tagMatches = itemTags.map((tag) => matchResultForStringQuery(tag, query))
+    const someTagsMatches = tagMatches.some((match) => match !== MatchResult.None)
+
+    if (someTagsMatches) {
+      return true
+    }
+  }
+
+  if (itemToMatch.protected && !includeProtectedNoteText) {
+    return itemMatch === MatchResult.Title || itemMatch === MatchResult.TitleAndText
+  }
+
+  return itemMatch !== MatchResult.None
 }
 
 function matchResultForStringQuery(item: SearchableItem, searchString: string): MatchResult {
@@ -60,7 +143,7 @@ function matchResultForStringQuery(item: SearchableItem, searchString: string): 
   const title = item.title?.toLowerCase()
   const text = item.text?.toLowerCase()
   const lowercaseText = searchString.toLowerCase()
-  const words = lowercaseText.split(' ')
+  const words = searchString.split(' ')
   const quotedText = stringBetweenQuotes(lowercaseText)
 
   if (quotedText) {
@@ -74,17 +157,9 @@ function matchResultForStringQuery(item: SearchableItem, searchString: string): 
     return item.uuid === lowercaseText ? MatchResult.Uuid : MatchResult.None
   }
 
-  const matchesTitle =
-    title &&
-    words.every((word) => {
-      return title.indexOf(word) >= 0
-    })
+  const matchesTitle = title && words.every((word) => searchTermMatches(title, word))
 
-  const matchesBody =
-    text &&
-    words.every((word) => {
-      return text.indexOf(word) >= 0
-    })
+  const matchesBody = text && words.every((word) => searchTermMatches(text, word))
 
   return (matchesTitle ? MatchResult.Title : 0) + (matchesBody ? MatchResult.Text : 0)
 }
